@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: defect_db_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234 # 필요 시 안전한 비밀번호로 변경하세요
+      POSTGRES_DB: defect_db
+    ports:
+      - "15432:5432"
+    volumes:
+      - defect_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d defect_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  defect_db_data:
