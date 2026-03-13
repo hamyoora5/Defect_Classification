@@ -2,12 +2,62 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import os
+import time
 from datetime import datetime, timedelta
 
-# 페이지 설정
-st.set_page_config(page_title="Vision AI Dashboard", layout="wide")
+# 1. 페이지 설정 및 디자인 (밝고 깨끗한 테마 적용)
+st.set_page_config(page_title="Vision AI | Smart Factory", layout="wide")
 
-# 1. DB 연결 함수
+# 밝은 테마의 현대적인 UI 디자인 CSS
+st.markdown("""
+<style>
+    /* 배경 및 기본 폰트 */
+    .main { 
+        background-color: #f8f9fa; 
+        color: #212529; 
+    }
+    
+    /* 카드 스타일 (밝은 배경에 그림자 효과) */
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        padding: 15px 20px;
+        border-radius: 12px;
+        border: 1px solid #dee2e6;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    
+    /* 가동 상태 박스 */
+    .status-container {
+        padding: 15px;
+        border-radius: 12px;
+        text-align: center;
+        font-weight: 700;
+        font-size: 1.1rem;
+        margin-bottom: 10px;
+    }
+    .status-operating {
+        background-color: #e8f5e9;
+        color: #2e7d32;
+        border: 2px solid #2e7d32;
+    }
+    .status-stopped {
+        background-color: #ffebee;
+        color: #c62828;
+        border: 2px solid #c62828;
+    }
+    
+    /* 타이틀 색상 보정 */
+    h1, h2, h3 { color: #1a1a1b; }
+    
+    /* 리스트 선택 가독성 */
+    .stRadio [data-testid="stMarkdownContainer"] {
+        padding: 5px;
+        font-weight: 500;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# 2. DB 연결 함수
 def get_db_data():
     try:
         conn = psycopg2.connect(
@@ -15,62 +65,108 @@ def get_db_data():
             port=os.getenv("DB_PORT", "15432"),
             database=os.getenv("DB_NAME", "defect_db"),
             user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASS", "1234")
+            password=os.getenv("DB_PASS", "1234"),
+            connect_timeout=3
         )
-        query = "SELECT * FROM inspection_results ORDER BY inspection_time DESC LIMIT 1000"
+        query = "SELECT * FROM inspection_results ORDER BY inspection_time DESC LIMIT 500"
         df = pd.read_sql(query, conn)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Database connection error: {e}")
-        # 테스트용 더미 데이터 반환 (DB 없을 시 대비)
-        return pd.DataFrame({
-            'inspection_time': [datetime.now() - timedelta(minutes=i*10) for i in range(10)],
-            'is_defective': [True, False, False, True, False, False, False, True, False, False],
-            'confidence': [0.95, 0.99, 0.98, 0.92, 0.97, 0.99, 0.99, 0.88, 0.99, 0.99],
-            'label': ['불량품', '양품', '양품', '불량품', '양품', '양품', '양품', '불량품', '양품', '양품'],
-            'product_id': [f'PART_{i}' for i in range(10)]
-        })
-
-# 2. 메인 페이지 구성
-st.title("🚗 Smart Factory Vision AI Dashboard")
-st.subheader("실시간 자동차 도어 생산 품질 모니터링")
+    except Exception:
+        return pd.DataFrame()
 
 # 데이터 로드
 df = get_db_data()
 
-# 3. 상단 메트릭 (KPI)
+# 3. 상태 분석
+is_operating = False
 if not df.empty:
-    total_count = len(df)
-    defect_count = df['is_defective'].sum()
-    defect_rate = (defect_count / total_count) * 100 if total_count > 0 else 0
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("총 생산량 (Recent 1000)", f"{total_count} EA")
-    col2.metric("불량 검출수", f"{defect_count} EA", delta_color="inverse")
-    col3.metric("평균 불량률", f"{defect_rate:.2f}%", delta=f"{defect_rate - 5:.1f}%" if defect_rate > 5 else None, delta_color="inverse")
+    last_time = df['inspection_time'].iloc[0]
+    if (datetime.now() - last_time).total_seconds() < 30:
+        is_operating = True
 
-# 4. 차트 및 상세 데이터
+start_time_str = "-"
+elapsed_time_str = "-"
+if not df.empty:
+    today_data = df[df['inspection_time'].dt.date == datetime.now().date()]
+    if not today_data.empty:
+        start_ts = today_data['inspection_time'].min()
+        start_time_str = start_ts.strftime("%H:%M:%S")
+        if is_operating:
+            diff = datetime.now() - start_ts
+            h, r = divmod(diff.total_seconds(), 3600)
+            m, s = divmod(r, 60)
+            elapsed_time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+        else:
+            elapsed_time_str = "PAUSED"
+
+# 4. 헤더 레이아웃
+header_col1, header_col2, header_col3, header_col4 = st.columns([2.5, 1, 1, 1])
+
+with header_col1:
+    st.title("🏭 Smart Vision Dashboard")
+    st.caption("AI-Powered Quality Integrity Monitoring System (Light Mode)")
+
+with header_col2:
+    s_class = "status-operating" if is_operating else "status-stopped"
+    s_label = "● SYSTEM OPERATING" if is_operating else "○ SYSTEM STOPPED"
+    st.markdown(f'<div class="status-container {s_class}">{s_label}</div>', unsafe_allow_html=True)
+
+with header_col3:
+    st.metric("Shift Start", start_time_str)
+
+with header_col4:
+    st.metric("Operation Time", elapsed_time_str)
+
 st.divider()
-col_left, col_right = st.columns([2, 1])
 
-with col_left:
-    st.write("### 📈 시간대별 불량 발생 현황")
-    if not df.empty:
-        df['hour'] = pd.to_datetime(df['inspection_time']).dt.floor('H')
-        hourly_stats = df.groupby('hour').agg({'is_defective': 'sum', 'product_id': 'count'}).rename(columns={'product_id': 'total'})
-        st.line_chart(hourly_stats['is_defective'])
+# 5. 메인 섹션
+if not df.empty:
+    col_stat, col_list, col_view = st.columns([0.8, 1.2, 2])
 
-with col_right:
-    st.write("### 🚨 최근 불량 항목 리스트")
-    if not df.empty:
-        recent_defects = df[df['is_defective'] == True].head(5)
-        st.dataframe(recent_defects[['product_id', 'confidence', 'inspection_time']])
+    with col_stat:
+        st.subheader("📊 Statistics")
+        total = len(df)
+        defects = df['is_defective'].sum()
+        rate = (defects / total) * 100
+        st.metric("Total Yield", f"{total} EA")
+        st.metric("Total Defects", f"{defects} EA", delta=f"{defects}", delta_color="inverse")
+        st.metric("Defect Rate", f"{rate:.1f}%")
 
-# 5. 상세 데이터 테이블
-st.write("### 📋 전체 생산 이력 (최근 100건)")
-st.dataframe(df.head(100), use_container_width=True)
+    with col_list:
+        st.subheader("🚨 Recent Defects")
+        defects_df = df[df['is_defective'] == True].head(10).copy()
+        if not defects_df.empty:
+            selected_id = st.radio(
+                "Select defect log to inspect:",
+                options=defects_df['product_id'].unique(),
+                format_func=lambda x: f"ID: {x} | {defects_df[defects_df['product_id']==x]['inspection_time'].iloc[0].strftime('%H:%M:%S')}",
+                label_visibility="collapsed"
+            )
+            selected_row = defects_df[defects_df['product_id'] == selected_id].iloc[0]
+        else:
+            st.success("No defects detected in recent batch.")
+            selected_row = None
 
-# 자동 새로고침 (옵션)
-if st.button('데이터 수동 새로고침'):
+    with col_view:
+        st.subheader("🔍 Inspection Analysis")
+        if selected_row is not None:
+            # 상세 정보 요약 바
+            st.markdown(f"#### ID: `{selected_row['product_id']}`")
+            st.markdown(f"**Type:** {selected_row['defect_type']} | **Confidence:** {selected_row['confidence']:.2f}")
+            
+            res_path = selected_row['result_image_path']
+            if os.path.exists(res_path):
+                st.image(res_path, use_container_width=True, caption=f"Defect Localization Result ({selected_row['product_id']})")
+            else:
+                st.warning(f"Image data not found: {res_path}")
+        else:
+            st.info("Select a log from the list to view the AI analysis image.")
+
+else:
+    st.warning("No production data available. Please ensure API and Simulator are running.")
+
+# 자동 새로고침
+time.sleep(1)
+if is_operating:
     st.rerun()
