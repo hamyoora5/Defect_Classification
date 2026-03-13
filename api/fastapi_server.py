@@ -21,7 +21,21 @@ os.makedirs(IMG_SAVE_DIR, exist_ok=True)
 # 추론 엔진 초기화 (USER 요청에 따라 CPU 환경으로 설정)
 inference = YOLOInference(MODEL_PATH, device='cpu')
 
-# 2. 데이터베이스 연결 함수
+# 2. 전역 변수 및 Batch ID 설정
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--batch_id", default="", help="Manual Batch ID")
+args, unknown = parser.parse_known_args()
+
+# 한국 시간 기준 (UTC+9)
+from datetime import timedelta, timezone
+KST_TZ = timezone(timedelta(hours=9))
+
+if args.batch_id and args.batch_id.strip():
+    CURRENT_BATCH_ID = args.batch_id.strip()
+else:
+    CURRENT_BATCH_ID = f"LOT-{datetime.now(KST_TZ).strftime('%Y%m%d-%H%M%S')}"
+
 def get_db_connection():
     try:
         conn = psycopg2.connect(
@@ -58,16 +72,22 @@ async def predict_image(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-    # 3. 결과 DB 저장 (비동기로 권장되나 단순화를 위해 동기 수행)
+    # 3. 결과 DB 저장
     import json
     conn = get_db_connection()
     if conn:
         cursor = conn.cursor()
         try:
+            KST = timezone(timedelta(hours=9))
+            now_local = datetime.now(KST)
+            
+            # 전역에서 생성된 CURRENT_BATCH_ID 사용
+            batch_id = CURRENT_BATCH_ID
+            
             insert_query = """
             INSERT INTO inspection_results 
-            (product_id, image_path, result_image_path, quality, is_defective, confidence, defect_type, bbox, inspection_time)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            (product_id, image_path, result_image_path, quality, is_defective, confidence, defect_type, bbox, inspection_time, batch_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             cursor.execute(insert_query, (
                 file.filename,
@@ -77,7 +97,9 @@ async def predict_image(file: UploadFile = File(...)):
                 prediction['is_defective'],
                 prediction['confidence'],
                 prediction['defect_type'],
-                json.dumps(prediction.get('detections', []))
+                json.dumps(prediction.get('detections', [])),
+                now_local,
+                batch_id # 관리 번호 추가
             ))
             conn.commit()
             cursor.close()

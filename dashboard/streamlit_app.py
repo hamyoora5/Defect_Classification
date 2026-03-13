@@ -4,20 +4,14 @@ import psycopg2
 import os
 import time
 from datetime import datetime, timedelta
+from sqlalchemy import create_engine
 
-# 1. 페이지 설정 및 디자인 (밝고 깨끗한 테마 적용)
+# 1. 페이지 설정 및 디자인
 st.set_page_config(page_title="Vision AI | Smart Factory", layout="wide")
 
-# 밝은 테마의 현대적인 UI 디자인 CSS
 st.markdown("""
 <style>
-    /* 배경 및 기본 폰트 */
-    .main { 
-        background-color: #f8f9fa; 
-        color: #212529; 
-    }
-    
-    /* 카드 스타일 (밝은 배경에 그림자 효과) */
+    .main { background-color: #f8f9fa; color: #212529; }
     div[data-testid="stMetric"] {
         background: #ffffff;
         padding: 15px 20px;
@@ -25,148 +19,165 @@ st.markdown("""
         border: 1px solid #dee2e6;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    
-    /* 가동 상태 박스 */
-    .status-container {
-        padding: 15px;
-        border-radius: 12px;
-        text-align: center;
-        font-weight: 700;
-        font-size: 1.1rem;
-        margin-bottom: 10px;
-    }
-    .status-operating {
-        background-color: #e8f5e9;
-        color: #2e7d32;
-        border: 2px solid #2e7d32;
-    }
-    .status-stopped {
-        background-color: #ffebee;
-        color: #c62828;
-        border: 2px solid #c62828;
-    }
-    
-    /* 타이틀 색상 보정 */
-    h1, h2, h3 { color: #1a1a1b; }
-    
-    /* 리스트 선택 가독성 */
-    .stRadio [data-testid="stMarkdownContainer"] {
-        padding: 5px;
-        font-weight: 500;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# 2. DB 연결 함수
+# 2. DB 연결 및 기능 함수
 def get_db_data():
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=os.getenv("DB_PORT", "15432"),
-            database=os.getenv("DB_NAME", "defect_db"),
-            user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASS", "1234"),
-            connect_timeout=3
-        )
-        query = "SELECT * FROM inspection_results ORDER BY inspection_time DESC LIMIT 500"
-        df = pd.read_sql(query, conn)
-        conn.close()
+        conn_str = f"postgresql://postgres:1234@localhost:15432/defect_db"
+        engine = create_engine(conn_str)
+        query = "SELECT * FROM inspection_results WHERE inspection_time::date = CURRENT_DATE ORDER BY inspection_time DESC"
+        df = pd.read_sql(query, engine)
+        
+        # 시간대 강제 보정 (UTC -> KST)
+        if not df.empty and 'inspection_time' in df.columns:
+            df['inspection_time'] = pd.to_datetime(df['inspection_time'])
+            if df['inspection_time'].dt.tz is None:
+                df['inspection_time'] = df['inspection_time'] + timedelta(hours=9)
+            else:
+                import pytz
+                kst = pytz.timezone('Asia/Seoul')
+                df['inspection_time'] = df['inspection_time'].dt.tz_convert(kst)
         return df
     except Exception:
         return pd.DataFrame()
 
+def reset_production_db():
+    try:
+        conn = psycopg2.connect(host="localhost", port="15432", database="defect_db", user="postgres", password="1234")
+        cursor = conn.cursor()
+        cursor.execute("TRUNCATE TABLE inspection_results RESTART IDENTITY;")
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+# 3. 사이드바 네비게이션
+with st.sidebar:
+    st.header("🎮 Navigation")
+    page = st.selectbox("Select Display", ["📊 Main Monitor", "🚨 Defect Analysis"])
+    st.divider()
+    st.header("⚙️ Admin")
+    if st.button("🗑️ Reset All Data"):
+        if reset_production_db():
+            st.success("Database Reset!")
+            time.sleep(1)
+            st.rerun()
+
 # 데이터 로드
+now = datetime.now()
 df = get_db_data()
 
-# 3. 상태 분석
+# 가동 상태 판별 (마지막 데이터가 60초 이내면 Operating)
 is_operating = False
+current_batch_id = "N/A"
 if not df.empty:
-    last_time = df['inspection_time'].iloc[0]
-    if (datetime.now() - last_time).total_seconds() < 30:
+    current_batch_id = df['batch_id'].iloc[0]
+    last_time = df['inspection_time'].iloc[0].replace(tzinfo=None)
+    if (now - last_time).total_seconds() < 60:
         is_operating = True
 
-start_time_str = "-"
-elapsed_time_str = "-"
-if not df.empty:
-    today_data = df[df['inspection_time'].dt.date == datetime.now().date()]
-    if not today_data.empty:
-        start_ts = today_data['inspection_time'].min()
+# 4. 페이지 출력
+if page == "📊 Main Monitor":
+    # 시간 정보 계산
+    start_time_str = "WAITING"
+    elapsed_time_str = "00:00:00"
+    if not df.empty:
+        # 현재 배치 기준 필터링
+        batch_df = df[df['batch_id'] == current_batch_id]
+        start_ts = batch_df['inspection_time'].min().replace(tzinfo=None)
         start_time_str = start_ts.strftime("%H:%M:%S")
-        if is_operating:
-            diff = datetime.now() - start_ts
-            h, r = divmod(diff.total_seconds(), 3600)
-            m, s = divmod(r, 60)
-            elapsed_time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
-        else:
-            elapsed_time_str = "PAUSED"
+        
+        # [핵심] 가동 중이면 현재 시각, 중단 시 마지막 데이터 시각 기준으로 스톱워치 멈춤
+        ref_time = now if is_operating else df['inspection_time'].iloc[0].replace(tzinfo=None)
+        delta = ref_time - start_ts
+        total_sec = max(0, int(delta.total_seconds()))
+        h, r = divmod(total_sec, 3600)
+        m, s = divmod(r, 60)
+        elapsed_time_str = f"{h:02d}:{m:02d}:{s:02d}"
 
-# 4. 헤더 레이아웃
-header_col1, header_col2, header_col3, header_col4 = st.columns([2.5, 1, 1, 1])
+    # 상단 요약 바
+    h1, h2, h3, h4 = st.columns([2.2, 1, 1, 1])
+    with h1:
+        st.title("🏭 Production Live")
+        s_color = "#2e7d32" if is_operating else "#d32f2f"
+        s_bg = "#e8f5e9" if is_operating else "#ffebee"
+        s_label = "● SYSTEM OPERATING" if is_operating else "○ SYSTEM STOPPED"
+        st.markdown(f'<div style="padding:10px; border-radius:8px; text-align:center; font-weight:700; border:2px solid {s_color}; background-color:{s_bg}; color:{s_color};">{s_label}</div>', unsafe_allow_html=True)
+    with h2: st.metric("Now (KST)", now.strftime("%H:%M:%S"))
+    with h3: st.metric("Batch Start", start_time_str)
+    with h4: st.metric("Running", elapsed_time_str)
+    
+    st.divider()
 
-with header_col1:
-    st.title("🏭 Smart Vision Dashboard")
-    st.caption("AI-Powered Quality Integrity Monitoring System (Light Mode)")
-
-with header_col2:
-    s_class = "status-operating" if is_operating else "status-stopped"
-    s_label = "● SYSTEM OPERATING" if is_operating else "○ SYSTEM STOPPED"
-    st.markdown(f'<div class="status-container {s_class}">{s_label}</div>', unsafe_allow_html=True)
-
-with header_col3:
-    st.metric("Shift Start", start_time_str)
-
-with header_col4:
-    st.metric("Operation Time", elapsed_time_str)
-
-st.divider()
-
-# 5. 메인 섹션
-if not df.empty:
-    col_stat, col_list, col_view = st.columns([0.8, 1.2, 2])
-
-    with col_stat:
-        st.subheader("📊 Statistics")
-        total = len(df)
-        defects = df['is_defective'].sum()
-        rate = (defects / total) * 100
-        st.metric("Total Yield", f"{total} EA")
-        st.metric("Total Defects", f"{defects} EA", delta=f"{defects}", delta_color="inverse")
-        st.metric("Defect Rate", f"{rate:.1f}%")
-
-    with col_list:
-        st.subheader("🚨 Recent Defects")
-        defects_df = df[df['is_defective'] == True].head(10).copy()
-        if not defects_df.empty:
-            selected_id = st.radio(
-                "Select defect log to inspect:",
-                options=defects_df['product_id'].unique(),
-                format_func=lambda x: f"ID: {x} | {defects_df[defects_df['product_id']==x]['inspection_time'].iloc[0].strftime('%H:%M:%S')}",
-                label_visibility="collapsed"
-            )
-            selected_row = defects_df[defects_df['product_id'] == selected_id].iloc[0]
-        else:
-            st.success("No defects detected in recent batch.")
-            selected_row = None
-
-    with col_view:
-        st.subheader("🔍 Inspection Analysis")
-        if selected_row is not None:
-            # 상세 정보 요약 바
-            st.markdown(f"#### ID: `{selected_row['product_id']}`")
-            st.markdown(f"**Type:** {selected_row['defect_type']} | **Confidence:** {selected_row['confidence']:.2f}")
+    if not df.empty:
+        c1, c2, c3 = st.columns([0.8, 1.2, 2])
+        with c1:
+            st.subheader("📊 Monitoring")
+            total_daily = len(df)
+            total_defects = sum(df['is_defective'])
             
-            res_path = selected_row['result_image_path']
-            if os.path.exists(res_path):
-                st.image(res_path, use_container_width=True, caption=f"Defect Localization Result ({selected_row['product_id']})")
-            else:
-                st.warning(f"Image data not found: {res_path}")
-        else:
-            st.info("Select a log from the list to view the AI analysis image.")
+            batch_df = df[df['batch_id'] == current_batch_id]
+            b_total = len(batch_df)
+            b_defects = sum(batch_df['is_defective'])
+            b_rate = (b_defects / b_total) * 100 if b_total > 0 else 0
+            
+            st.markdown("### Daily Total")
+            st.metric("Total Yield", f"{total_daily} EA")
+            st.metric("Total Defects", f"{total_defects} EA", delta_color="inverse")
+            st.divider()
+            st.markdown(f"### Batch: {current_batch_id}")
+            st.metric("Batch Yield", f"{b_total} EA")
+            st.metric("Batch Defects", f"{b_defects} EA", delta=f"{b_defects}", delta_color="inverse")
+            st.metric("Batch Quality", f"{100-b_rate:.1f}%")
+            st.progress(1.0 - (b_rate/100))
+        
+        with c2:
+            st.subheader("🚨 Recent Logs")
+            display_list = df.head(15).copy()
+            selected_id = st.radio("Items", options=display_list['product_id'].tolist(),
+                format_func=lambda x: f"{'🔴' if display_list[display_list['product_id']==x]['is_defective'].iloc[0] else '⚪'} ID: {x} | {display_list[display_list['product_id']==x]['inspection_time'].iloc[0].strftime('%H:%M:%S')}",
+                label_visibility="collapsed")
+            selected_row = display_list[display_list['product_id'] == selected_id].iloc[0]
+            
+        with c3:
+            st.subheader("🔍 Inspection Detail")
+            if selected_row is not None:
+                st.markdown(f"#### PRODUCT ID: `{selected_row['product_id']}`")
+                st.info(f"**Batch:** {selected_row['batch_id']} | **Time:** {selected_row['inspection_time'].strftime('%H:%M:%S')}")
+                if selected_row['is_defective']: st.error(f"DEFECT: {selected_row['defect_type']}")
+                else: st.success("QUALITY PASS")
+                path = selected_row['result_image_path']
+                if os.path.exists(path): st.image(path, use_column_width=True)
+                else: st.warning("Loading analysis image...")
+    else:
+        st.info("Waiting for production line start...")
 
-else:
-    st.warning("No production data available. Please ensure API and Simulator are running.")
+elif page == "🚨 Defect Analysis":
+    st.title("🚨 Defect History Analysis")
+    defects_only = df[df['is_defective'] == True].copy()
+    if not defects_only.empty:
+        col1, col2 = st.columns([1, 1.5])
+        with col1:
+            st.subheader("Today's Defects")
+            st.dataframe(defects_only[['inspection_time', 'product_id', 'batch_id', 'defect_type']].rename(
+                columns={'inspection_time': 'Time', 'product_id': 'Product ID', 'batch_id': 'Batch No', 'defect_type': 'Defect Type'}
+            ), use_container_width=True, hide_index=True)
+            selected_id = st.selectbox("Detailed Analysis Selection", defects_only['product_id'].tolist())
+            row = defects_only[defects_only['product_id'] == selected_id].iloc[0]
+        with col2:
+            st.subheader("Detail View")
+            st.error(f"**ID:** {row['product_id']} | **Batch:** {row['batch_id']}")
+            path = row['result_image_path']
+            if os.path.exists(path):
+                st.image(path, use_column_width=True)
+                st.json(row['bbox'])
+            else: st.warning("Image not found.")
+    else: st.success("No defects detected yet.")
 
-# 자동 새로고침
-time.sleep(1)
-if is_operating:
-    st.rerun()
+# 자동 새로고침 (2초)
+time.sleep(2)
+st.rerun()
