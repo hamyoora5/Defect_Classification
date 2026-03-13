@@ -1,88 +1,55 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel
 import os
 import shutil
 import psycopg2
 import sys
-from datetime import datetime
+import json
+from datetime import datetime, timedelta, timezone
 
-# 모델 및 추론 로직 추가 경로 포함
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from model.inference_yolo import YOLOInference
 
-app = FastAPI(title="Smart Factory Vision AI Result API")
+app = FastAPI()
 
-# 1. 환경 설정 및 초기화
-# YOLO 학습 결과 경로로 변경
-MODEL_PATH = os.getenv("MODEL_PATH", "d:/docker_data/Defect_Classification/runs/detect/defect_yolo_final_optimized/weights/last.pt")
+# 설정
+MODEL_PATH = "d:/docker_data/Defect_Classification/runs/detect/defect_yolo_final_optimized/weights/last.pt"
 IMG_SAVE_DIR = "d:/docker_data/Defect_Classification/data/results"
+BATCH_FILE = "d:/docker_data/Defect_Classification/active_batch.txt"
 os.makedirs(IMG_SAVE_DIR, exist_ok=True)
 
-# 추론 엔진 초기화 (USER 요청에 따라 CPU 환경으로 설정)
 inference = YOLOInference(MODEL_PATH, device='cpu')
-
-# 2. 전역 변수 및 Batch ID 설정
-import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument("--batch_id", default="", help="Manual Batch ID")
-args, unknown = parser.parse_known_args()
-
-# 한국 시간 기준 (UTC+9)
-from datetime import timedelta, timezone
-KST_TZ = timezone(timedelta(hours=9))
-
-if args.batch_id and args.batch_id.strip():
-    CURRENT_BATCH_ID = args.batch_id.strip()
-else:
-    CURRENT_BATCH_ID = f"LOT-{datetime.now(KST_TZ).strftime('%Y%m%d-%H%M%S')}"
 
 def get_db_connection():
     try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
-            port=os.getenv("DB_PORT", "15432"),
-            database=os.getenv("DB_NAME", "defect_db"),
-            user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASS", "1234")
-        )
+        conn = psycopg2.connect(host="localhost", port="15432", database="defect_db", user="postgres", password="1234")
         return conn
     except Exception as e:
-        print(f"Database connection error: {e}")
+        print(f"DB Connection Error: {e}")
         return None
 
-# 3. API 엔드포인트
-@app.get("/")
-def read_root():
-    return {"message": "Smart Factory Vision AI API Server is running."}
+def get_active_batch():
+    if os.path.exists(BATCH_FILE):
+        with open(BATCH_FILE, "r", encoding='utf-8') as f:
+            return f.read().strip()
+    return "AUTO-BATCH"
 
 @app.post("/predict")
 async def predict_image(file: UploadFile = File(...)):
-    """
-    이미지 파일을 업로드 받아 추론 결과를 반환하고 결과를 DB에 저장함
-    """
-    # 1. 파일 임시 저장
     file_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     temp_path = os.path.join(IMG_SAVE_DIR, f"temp_{file_id}_{file.filename}")
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 2. 모델 추론
-    try:
-        prediction = inference.predict(temp_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    prediction = inference.predict(temp_path)
     
-    # 3. 결과 DB 저장
-    import json
     conn = get_db_connection()
     if conn:
         cursor = conn.cursor()
         try:
-            KST = timezone(timedelta(hours=9))
-            now_local = datetime.now(KST)
-            
-            # 전역에서 생성된 CURRENT_BATCH_ID 사용
-            batch_id = CURRENT_BATCH_ID
+            # [필승] 타임존 정보를 완전히 제거하여, Postgres가 UTC로 비틀지 못하게 '절대 수치'만 전송
+            # 지금이 15:30분이면, (15, 30)이라는 숫자 데이터 그대로만 보냄
+            now_kst_naive = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+            batch_id = get_active_batch()
             
             insert_query = """
             INSERT INTO inspection_results 
@@ -90,31 +57,20 @@ async def predict_image(file: UploadFile = File(...)):
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             cursor.execute(insert_query, (
-                file.filename,
-                temp_path,
-                prediction.get('result_image'),
-                prediction['label'],
-                prediction['is_defective'],
-                prediction['confidence'],
-                prediction['defect_type'],
+                file.filename, temp_path, prediction.get('result_image'),
+                prediction['label'], prediction['is_defective'],
+                prediction['confidence'], prediction['defect_type'],
                 json.dumps(prediction.get('detections', [])),
-                now_local,
-                batch_id # 관리 번호 추가
+                now_kst_naive, batch_id
             ))
             conn.commit()
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"DB Insert error: {e}")
+            print(f"DB Error: {e}")
             conn.rollback()
-            cursor.close()
-            conn.close()
     
-    return {
-        "filename": file.filename,
-        "prediction": prediction,
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"prediction": prediction}
 
 if __name__ == "__main__":
     import uvicorn

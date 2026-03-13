@@ -36,7 +36,7 @@ class YOLOInference:
             project=output_path, 
             name='latest',
             exist_ok=True,
-            conf=0.25,
+            conf=0.01,           # 임계치를 낮추어 학습 초기 모델의 예측값도 표시되게 함
             device=self.device
         )
         

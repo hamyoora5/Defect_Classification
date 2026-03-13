@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS inspection_results (
     product_id VARCHAR(50) NOT NULL,    -- 제품 고유 ID (파일명 등)
     image_path TEXT NOT NULL,           -- 원본 이미지 저장 경로
     result_image_path TEXT,            -- Bbox가 그려진 결과 이미지 경로
-    inspection_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- 검사 시간 (타임존 포함)
+    inspection_time TIMESTAMP DEFAULT NULL, -- 검사 시간 (타임존 없이 절대 수치만 기록)
     quality VARCHAR(10) NOT NULL,       -- 판별 결과 ('양품', '불량품')
     is_defective BOOLEAN NOT NULL,      -- 불량 여부 (True: 불량, False: 양품)
     confidence FLOAT,                   -- 모델의 예측 신뢰도 (0.0 ~ 1.0)

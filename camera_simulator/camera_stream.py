@@ -1,38 +1,43 @@
 import os
 import requests
 import time
-import glob
-import random
+import pandas as pd
 from datetime import datetime
 
-# 1. 설정 및 초기화
-API_URL = os.getenv("API_URL", "http://localhost:8000/predict")
+# 1. 설정
+API_URL = "http://localhost:8000/predict"
 IMAGE_DIR = "d:/docker_data/Defect_Classification/data/yolo_dataset/images/val"
-INTERVAL_SECONDS = 12 # 기획안 기준 12초 간격
+CSV_PATH = "d:/docker_data/Defect_Classification/validation_defects_list.csv"
+INTERVAL_SECONDS = 12
 
 def main():
-    print(f"[{datetime.now()}] Camera Simulator started.")
-    print(f"Scanning for images in: {IMAGE_DIR}")
+    print(f"[{datetime.now()}] Mixed Sequence Simulator started.")
     
-    # 모든 이미지 파일 경로 리스트업
-    image_list = glob.glob(os.path.join(IMAGE_DIR, "**/*.jpg"), recursive=True)
-    image_list += glob.glob(os.path.join(IMAGE_DIR, "**/*.jpeg"), recursive=True)
-    image_list += glob.glob(os.path.join(IMAGE_DIR, "**/*.png"), recursive=True)
-    
-    if not image_list:
-        print(f"Error: No images found in {IMAGE_DIR}")
+    # [핵심] 랜덤 대신 CSV 파일 순서대로 이미지 전송
+    if not os.path.exists(CSV_PATH):
+        print(f"Error: CSV file not found at {CSV_PATH}")
         return
-
-    print(f"Found {len(image_list)} images to simulate.")
+        
+    df = pd.read_csv(CSV_PATH)
+    image_list = df['product_id'].tolist()
     
-    # 2. 시뮬레이션 루프
+    print(f"Loaded sequence for {len(image_list)} images from CSV.")
+    
+    # 2. 순차적 전송 루프
     try:
+        idx = 0
         while True:
-            # 셔플이나 랜덤 선택 (컨베이어 벨트 흐름 모사)
-            img_path = random.choice(image_list)
-            file_name = os.path.basename(img_path)
+            file_name = image_list[idx % len(image_list)]
+            img_path = os.path.join(IMAGE_DIR, file_name)
             
-            print(f"[{datetime.now()}] Capturing image: {file_name}")
+            # 실제 파일이 있는지 확인
+            if not os.path.exists(img_path):
+                print(f"[{datetime.now()}] [WARN] File not found: {file_name}")
+                idx += 1
+                continue
+            
+            state = "DEFECT" if "_10_" not in file_name else "NORMAL"
+            print(f"[{datetime.now()}] [{idx+1}/{len(image_list)}] [{state}] Sending: {file_name}")
             
             # API 전송
             try:
@@ -42,18 +47,18 @@ def main():
                 
                 if response.status_code == 200:
                     result = response.json()
-                    print(f"  └─ Prediction: {result['prediction']['label']} (Conf: {result['prediction']['confidence']:.2f})")
+                    label = result['prediction']['label']
+                    print(f"  └─ Prediction: {label}")
                 else:
-                    print(f"  └─ API Error: {response.status_code} - {response.text}")
+                    print(f"  └─ API Error: {response.status_code}")
                     
-            except requests.exceptions.ConnectionError:
-                print(f"  └─ Connection Error: API server is likely down.")
             except Exception as e:
-                print(f"  └─ Error: {e}")
+                print(f"  └─ Connection Error: {e}")
             
-            # 12초 대기
-            print(f"Waiting {INTERVAL_SECONDS} seconds for next capture...")
+            # 대기
+            print(f"Waiting {INTERVAL_SECONDS} seconds...")
             time.sleep(INTERVAL_SECONDS)
+            idx += 1
             
     except KeyboardInterrupt:
         print("\nSimulator stopped by user.")
