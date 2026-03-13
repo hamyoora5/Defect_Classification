@@ -8,17 +8,18 @@ from datetime import datetime
 
 # 모델 및 추론 로직 추가 경로 포함
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from model.inference import DefectInference
+from model.inference_yolo import YOLOInference
 
 app = FastAPI(title="Smart Factory Vision AI Result API")
 
 # 1. 환경 설정 및 초기화
-MODEL_PATH = os.getenv("MODEL_PATH", "d:/docker_data/Defect_Classification/data/cardoor/model/resnet_binary_model.pth")
+# YOLO 학습 결과 경로로 변경
+MODEL_PATH = os.getenv("MODEL_PATH", "d:/docker_data/Defect_Classification/runs/detect/defect_yolo_final_optimized/weights/last.pt")
 IMG_SAVE_DIR = "d:/docker_data/Defect_Classification/data/results"
 os.makedirs(IMG_SAVE_DIR, exist_ok=True)
 
-# 추론 엔진 초기화
-inference = DefectInference(MODEL_PATH)
+# 추론 엔진 초기화 (USER 요청에 따라 CPU 환경으로 설정)
+inference = YOLOInference(MODEL_PATH, device='cpu')
 
 # 2. 데이터베이스 연결 함수
 def get_db_connection():
@@ -58,21 +59,25 @@ async def predict_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
     # 3. 결과 DB 저장 (비동기로 권장되나 단순화를 위해 동기 수행)
+    import json
     conn = get_db_connection()
     if conn:
         cursor = conn.cursor()
         try:
             insert_query = """
-            INSERT INTO inspection_results (product_id, image_path, quality, is_defective, confidence, defect_type, inspection_time)
-            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO inspection_results 
+            (product_id, image_path, result_image_path, quality, is_defective, confidence, defect_type, bbox, inspection_time)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             """
             cursor.execute(insert_query, (
                 file.filename,
                 temp_path,
+                prediction.get('result_image'),
                 prediction['label'],
                 prediction['is_defective'],
                 prediction['confidence'],
-                prediction['defect_type']
+                prediction['defect_type'],
+                json.dumps(prediction.get('detections', []))
             ))
             conn.commit()
             cursor.close()

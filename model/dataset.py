@@ -25,6 +25,11 @@ class DefectDataset(Dataset):
         # 파일명 -> 전체 경로 매핑 빌드 (OS 횡단 검색 방지용)
         self.img_path_map = self._build_path_map(img_dir, ['.jpg', '.jpeg', '.JPG'])
         self.label_path_map = self._build_path_map(label_dir, ['.json'])
+        
+        # 실제 존재하는 이미지 파일만 남김 (전처리)
+        initial_len = len(self.data_info)
+        self.data_info = self.data_info[self.data_info.iloc[:, 0].isin(self.img_path_map.keys())].reset_index(drop=True)
+        print(f"Dataset Filtered: {len(self.data_info)}/{initial_len} samples remain.")
 
     def _build_path_map(self, root_dir, extensions):
         path_map = {}
@@ -58,7 +63,7 @@ class DefectDataset(Dataset):
         
         bboxes = []
         if label_path:
-            with open(label_path, 'r', encoding='utf-8') as f:
+            with open(label_path, 'r', encoding='utf-8-sig') as f:
                 ann = json.load(f)
                 # annotations에서 Bbox 정보 추출
                 for item in ann.get('annotations', []):
@@ -72,7 +77,7 @@ class DefectDataset(Dataset):
         sample = {
             'image': image,
             'label': torch.tensor(label, dtype=torch.long),
-            'bboxes': torch.tensor(bboxes, dtype=torch.float32) if bboxes else torch.zeros((0, 4)),
+            # 'bboxes': torch.tensor(bboxes, dtype=torch.float32) if bboxes else torch.zeros((0, 4)),
             'file_name': img_name
         }
 

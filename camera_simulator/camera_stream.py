@@ -7,7 +7,7 @@ from datetime import datetime
 
 # 1. 설정 및 초기화
 API_URL = os.getenv("API_URL", "http://localhost:8000/predict")
-IMAGE_DIR = "d:/docker_data/Defect_Classification/data/cardoor/01.데이터/2.Validation/원천데이터"
+IMAGE_DIR = "d:/docker_data/Defect_Classification/data/yolo_dataset/images/val"
 INTERVAL_SECONDS = 12 # 기획안 기준 12초 간격
 
 def main():
