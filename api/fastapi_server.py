@@ -12,7 +12,7 @@ from model.inference_yolo import YOLOInference
 app = FastAPI()
 
 # 설정 (3시간 긴급 복구 모델 경로로 변경)
-MODEL_PATH = "d:/docker_data/Defect_Classification/runs/detect/defect_yolo_fast_track/weights/last.pt"
+MODEL_PATH = "d:/docker_data/Defect_Classification/runs/detect/defect_yolo_final_optimized/weights/best.pt"
 IMG_SAVE_DIR = "d:/docker_data/Defect_Classification/data/results"
 BATCH_FILE = "d:/docker_data/Defect_Classification/active_batch.txt"
 os.makedirs(IMG_SAVE_DIR, exist_ok=True)
